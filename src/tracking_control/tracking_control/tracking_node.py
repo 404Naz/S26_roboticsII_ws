@@ -146,6 +146,7 @@ class TrackingNode(Node):
             robot_world_y = transform.transform.translation.y
             robot_world_z = transform.transform.translation.z
             robot_world_R = q2R([transform.transform.rotation.w, transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z])
+            robot_pose = robot_world_R
             obstacle_pose = robot_world_R@self.obs_pose+np.array([robot_world_x,robot_world_y,robot_world_z])
             goal_pose = robot_world_R@self.goal_pose+np.array([robot_world_x,robot_world_y,robot_world_z])
     
@@ -154,7 +155,7 @@ class TrackingNode(Node):
             self.get_logger().error('Transform error: ' + str(e))
             return
         
-        return obstacle_pose, goal_pose
+        return robot_pose, obstacle_pose, goal_pose
     
     def timer_update(self):
         ################### Write your code here ###################
@@ -170,25 +171,39 @@ class TrackingNode(Node):
             return
         
         # Get the current object pose in the robot base_footprint frame
-        current_obs_pose, current_goal_pose = self.get_current_poses()
+        current_robot_pose, current_obs_pose, current_goal_pose = self.get_current_poses()
         
         # TODO: get the control velocity command
-        cmd_vel = self.controller()
+        cmd_vel = self.controller(current_robot_pose, current_obs_pose, current_goal_pose)
         
         # publish the control command
         self.pub_control_cmd.publish(cmd_vel)
         #################################################
     
-    def controller(self):
+    def controller(self, robot_pose, obj_pose, goal_pose):
         # Instructions: You can implement your own control algorithm here
         # feel free to modify the code structure, add more parameters, more input variables for the function, etc.
         
         ########### Write your code here ###########
+        # obj_pose.transform.translation.x
+        # obj_pose.transform.translation.y
+        goal_x = goal_pose[0]
+        goal_y = goal_pose[1]
+        current_x = robot_pose[0]
+        current_y = robot_pose[1]
+
+        diff_x = current_x - goal_x
+        diff_y = current_y - goal_y
+
+        K_V = 1.0
+
+        vel_x = K_V*diff_x
+        vel_y = K_V*diff_y
         
         # TODO: Update the control velocity command
         cmd_vel = Twist()
-        cmd_vel.linear.x = 0
-        cmd_vel.linear.y = 0
+        cmd_vel.linear.x = vel_x
+        cmd_vel.linear.y = vel_y
         cmd_vel.angular.z = 0
         return cmd_vel
     
