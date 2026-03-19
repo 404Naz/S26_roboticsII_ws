@@ -185,20 +185,31 @@ class TrackingNode(Node):
         # feel free to modify the code structure, add more parameters, more input variables for the function, etc.
         
         ########### Write your code here ###########
-        # obj_pose.transform.translation.x
-        # obj_pose.transform.translation.y
-        goal_x = goal_pose[0]
-        goal_y = goal_pose[1]
-        current_x = robot_pose[0]
-        current_y = robot_pose[1]
+        
+        scale1 = 1.0
+        scale2 = 1.0
 
-        diff_x = current_x - goal_x
-        diff_y = current_y - goal_y
+        attractive_str = 0.5*scale1*((np.linalg.norm(goal_pose[:2]-robot_pose[:2]))**2)
+        attractive_direction = scale1*(goal_pose[:2]-robot_pose[:2])
+
+        repulsive_direction = np.zeros(2)
+        repulsive_str = 0
+
+        EPSILON = 1e-6
+        FIELD = 0.5
+        d_q = max(np.linalg.norm(obj_pose[:2] - robot_pose[:2]), EPSILON) # prevent divide by zero
+        if d_q < FIELD:
+            repulsive_str += 0.5*scale2*(((1 / d_q)-(1 / FIELD))**2)
+            g_dq = (obj_pose[:2] - robot_pose[:2]) / d_q
+            repulsive_direction += 0.5*scale2*((1 / FIELD)-(1 / d_q)) * (1 / (d_q**2)) * g_dq
+
+        total_direction = attractive_direction+repulsive_direction
+        # total_field = attractive_str+repulsive_str
 
         K_V = 1.0
 
-        vel_x = K_V*diff_x
-        vel_y = K_V*diff_y
+        vel_x = K_V*total_direction[0]
+        vel_y = K_V*total_direction[1]
         
         # TODO: Update the control velocity command
         cmd_vel = Twist()
