@@ -72,7 +72,7 @@ class ColorObjDetectionNode(Node):
         
         # Create publisher for the detected object and the bounding box
         self.pub_detected_obj = self.create_publisher(Image, '/detected_color_object',10)
-        self.pub_detected_obj_pose = self.create_publisher(PoseStamped, '/detected_color_object_pose', 10)
+        self.pub_detected_obj_pose = self.create_publisher(PoseStamped, '/detected_color_object_pose', 1)
         # Create a subscriber to the RGB and Depth images
         self.sub_rgb = Subscriber(self, Image, '/camera/color/image_raw')
         self.sub_depth = Subscriber(self, PointCloud2, '/camera/depth/points')
@@ -80,6 +80,7 @@ class ColorObjDetectionNode(Node):
         self.ts = ApproximateTimeSynchronizer([self.sub_rgb, self.sub_depth], 10, 0.1)
         # Register the callback to the time synchronizer
         self.ts.registerCallback(self.camera_callback)
+        self.counter = 0
 
     def camera_callback(self, rgb_msg, points_msg):
         #self.get_logger().info('Received RGB and Depth Messages')
@@ -102,7 +103,9 @@ class ColorObjDetectionNode(Node):
             x, y, w, h = cv2.boundingRect(largest_contour)
             # threshold by size
             if w * h < param_object_size_min:
-                self.get_logger().info("Object too small")
+                self.counter += 1
+                if self.counter % 10 == 0:
+                    self.get_logger().info(f"{self.counter}: Object too small")
                 return
             # draw rectangle
             rgb_image=cv2.rectangle(rgb_image, (x, y), (x + w, y + h), (0, 0, 255), 2)
@@ -139,7 +142,7 @@ class ColorObjDetectionNode(Node):
         # publush the detected object image
         detect_img_msg = self.br.cv2_to_imgmsg(rgb_image, encoding='bgr8')
         detect_img_msg.header = rgb_msg.header
-        self.get_logger().info('image message published')
+        # self.get_logger().info('object image message published')
         self.pub_detected_obj.publish(detect_img_msg)
         
 def main(args=None):

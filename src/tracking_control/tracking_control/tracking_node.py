@@ -79,17 +79,21 @@ class TrackingNode(Node):
         # Create publisher for the control command
         self.pub_control_cmd = self.create_publisher(Twist, '/track_cmd_vel', 10)
         # Create a subscriber to the detected object pose
-        self.sub_detected_goal_pose = self.create_subscription(PoseStamped, 'detected_color_object_pose', self.detected_obs_pose_callback, 10)
-        self.sub_detected_obs_pose = self.create_subscription(PoseStamped, 'detected_color_goal_pose', self.detected_goal_pose_callback, 10)
+        self.sub_detected_goal_pose = self.create_subscription(PoseStamped, 'detected_color_object_pose', self.detected_obs_pose_callback, 1)
+        self.sub_detected_obs_pose = self.create_subscription(PoseStamped, 'detected_color_goal_pose', self.detected_goal_pose_callback, 1)
 
         # Create timer, running at 100Hz
         self.timer = self.create_timer(0.01, self.timer_update)
+        self.counter = 0
+        self.counter2 = 0
     
     def detected_obs_pose_callback(self, msg):
         #self.get_logger().info('Received Detected Object Pose')
         
         odom_id = self.get_parameter('world_frame_id').get_parameter_value().string_value
         center_points = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
+
+        self.get_logger().info("Recieved Object Pose")
         
         # TODO: Filtering
         # You can decide to filter the detected object pose here
@@ -115,6 +119,8 @@ class TrackingNode(Node):
         
         odom_id = self.get_parameter('world_frame_id').get_parameter_value().string_value
         center_points = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
+
+        self.get_logger().info("Recieved Goal Pose")
         
         # TODO: Filtering
         # You can decide to filter the detected object pose here
@@ -146,14 +152,17 @@ class TrackingNode(Node):
             robot_world_y = transform.transform.translation.y
             robot_world_z = transform.transform.translation.z
             robot_world_R = q2R([transform.transform.rotation.w, transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z])
-            robot_pose = robot_world_R
-            obstacle_pose = robot_world_R@self.obs_pose+np.array([robot_world_x,robot_world_y,robot_world_z])
-            goal_pose = robot_world_R@self.goal_pose+np.array([robot_world_x,robot_world_y,robot_world_z])
+            robot_pose = np.array([robot_world_x,robot_world_y,robot_world_z])
+            if self.obs_pose is not None:
+                obstacle_pose = robot_world_R@self.obs_pose+robot_pose # np.array([robot_world_x,robot_world_y,robot_world_z])
+            else:
+                obstacle_pose = robot_pose - np.array([-1.0,-1.0,-1.0])
+            goal_pose = robot_world_R@self.goal_pose+robot_pose # np.array([robot_world_x,robot_world_y,robot_world_z])
     
         
         except TransformException as e:
             self.get_logger().error('Transform error: ' + str(e))
-            return
+            return None,None,None
         
         return robot_pose, obstacle_pose, goal_pose
     
@@ -163,6 +172,11 @@ class TrackingNode(Node):
         # Now, the robot stops if the object is not detected
         # But, you may want to think about what to do in this case
         # and update the command velocity accordingly
+        # if self.goal_pose is None:
+        #     if self.counter % 100 == 0:
+        #         self.get_logger().info("No Goal Pose :(")
+        #     self.counter += 1
+        
         if self.goal_pose is None:
             cmd_vel = Twist()
             cmd_vel.linear.x = 0.0
@@ -175,6 +189,11 @@ class TrackingNode(Node):
         
         # TODO: get the control velocity command
         cmd_vel = self.controller(current_robot_pose, current_obs_pose, current_goal_pose)
+        if self.counter2 % 10 == 0:
+            self.get_logger().info(f"pose: {current_robot_pose[:2]}, goal: {current_goal_pose[:2]}")
+            self.counter2 += 1
+
+        self.get_logger().info(f"vel: {cmd_vel}")
         
         # publish the control command
         self.pub_control_cmd.publish(cmd_vel)
@@ -185,11 +204,21 @@ class TrackingNode(Node):
         # feel free to modify the code structure, add more parameters, more input variables for the function, etc.
         
         ########### Write your code here ###########
-        
+        cmd_vel = Twist()
+        if robot_pose is None or goal_pose is None:
+            self.get_logger().error("robot or goal is None.")
+            cmd_vel.linear.x = -100.0
+            cmd_vel.linear.y = -100.0
+            return cmd_vel
+
+        if obj_pose is None:
+            self.get_logger().info("object is None.")
+            obj_pose = np.array([-1.0, -1.0, -1.0]) # behind
+
         scale1 = 1.0
         scale2 = 1.0
 
-        attractive_str = 0.5*scale1*((np.linalg.norm(goal_pose[:2]-robot_pose[:2]))**2)
+        # attractive_str = 0.5*scale1*((np.linalg.norm(goal_pose[:2]-robot_pose[:2]))**2)
         attractive_direction = scale1*(goal_pose[:2]-robot_pose[:2])
 
         repulsive_direction = np.zeros(2)
@@ -206,16 +235,18 @@ class TrackingNode(Node):
         total_direction = attractive_direction+repulsive_direction
         # total_field = attractive_str+repulsive_str
 
-        K_V = 1.0
+        K_V = 10.0
 
         vel_x = K_V*total_direction[0]
         vel_y = K_V*total_direction[1]
         
         # TODO: Update the control velocity command
-        cmd_vel = Twist()
         cmd_vel.linear.x = vel_x
         cmd_vel.linear.y = vel_y
-        cmd_vel.angular.z = 0
+        cmd_vel.linear.z = 0.0
+        cmd_vel.angular.x = 0.0
+        cmd_vel.angular.y = 0.0
+        cmd_vel.angular.z = 0.0
         return cmd_vel
     
         ############################################
