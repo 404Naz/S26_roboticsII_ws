@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
+from std_msgs.msg import String
 import numpy as np
 import sys, select, termios, tty
 
@@ -51,6 +52,7 @@ class JoySafetyNode(Node):
         
         # Create publisher for the control command
         self.pub_control_cmd = self.create_publisher(Twist, '/cmd_vel', 10)
+        self.start_tracking_publisher = self.create_publisher(String, '/start_tracking', 10)
         # Create a subscriber to the control command
         self.sub_track_cmd = self.create_subscription(Twist, '/track_cmd_vel', self.tracking_cmd_callback, 10)
     
@@ -91,8 +93,15 @@ class JoySafetyNode(Node):
             self.tracking_enabled = not self.tracking_enabled
             if self.tracking_enabled:
                 print("Switch ON tracking.")
+                msg = String()
+                msg.data = 'Start'
+                self.start_tracking_publisher.publish(msg)
+                print("Sent start message")
             else:
                 print("Switch OFF tracking.")
+                msg = String()
+                msg.data = 'Stop'
+                self.start_tracking_publisher.publish(msg)
         elif self.joystick_state is None:
             pass
         else:

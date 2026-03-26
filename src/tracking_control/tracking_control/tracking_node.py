@@ -1,6 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, PoseStamped
+from std_msgs.msg import String
 from tf2_ros import TransformException, Buffer, TransformListener
 import numpy as np
 import math
@@ -81,6 +82,11 @@ class TrackingNode(Node):
         # Create a subscriber to the detected object pose
         self.sub_detected_goal_pose = self.create_subscription(PoseStamped, 'detected_color_object_pose', self.detected_obs_pose_callback, 10)
         self.sub_detected_obs_pose = self.create_subscription(PoseStamped, 'detected_color_goal_pose', self.detected_goal_pose_callback, 10)
+        self.sub_start_tracking = self.create_subscription(String, '/start_tracking', self.start_tracking_callback, 10)
+
+        self.start_position = np.zeros(3)
+        self.approach = True
+        self.set_start_position = True
 
         # Create timer, running at 100Hz
         self.timer = self.create_timer(0.01, self.timer_update)
@@ -99,9 +105,9 @@ class TrackingNode(Node):
         # You can decide to filter the detected object pose here
         # For example, you can filter the pose based on the distance from the camera
         # or the height of the object
-        if np.linalg.norm(center_points) > 1: # or center_points[2] > 0.7:
-            self.obs_pose = None
-            return
+        # if np.linalg.norm(center_points) > 1: # or center_points[2] > 0.7:
+            # self.obs_pose = None
+            # return
         
         try:
             # Transform the center point from the camera frame to the world frame
@@ -121,14 +127,15 @@ class TrackingNode(Node):
         odom_id = self.get_parameter('world_frame_id').get_parameter_value().string_value
         center_points = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
 
-        # self.get_logger().info("Recieved Goal Pose")
+        # self.get_logger().info(f"Recieved Goal Pose, {np.linalg.norm(center_points)}")
         
         # TODO: Filtering
         # You can decide to filter the detected object pose here
         # For example, you can filter the pose based on the distance from the camera
         # or the height of the object
-        if np.linalg.norm(center_points) < 0.1: #or center_points[2] > 0.7:
-            self.goal_pose = None
+        if np.linalg.norm(center_points) < 0.3 or not self.approach: #or center_points[2] > 0.7:
+            self.approach = False
+            self.goal_pose = self.start_position
             return
         
         try:
@@ -142,7 +149,15 @@ class TrackingNode(Node):
         
         # Get the detected object pose in the world frame
         self.goal_pose = cp_world
-        
+
+    def start_tracking_callback(self, msg):
+        self.get_logger().info("In start callback")
+        if msg.data == "Start":
+            self.set_start_position = False
+        else:
+            self.set_start_position = True
+            self.approach = True
+
     def get_current_poses(self):
         
         odom_id = self.get_parameter('world_frame_id').get_parameter_value().string_value
@@ -154,14 +169,21 @@ class TrackingNode(Node):
             robot_world_y = transform.transform.translation.y
             robot_world_z = transform.transform.translation.z
             robot_world_R = q2R([transform.transform.rotation.w, transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z])
-            robot_pose = np.array([robot_world_x,robot_world_y,robot_world_z])
+            robot_pos = np.array([robot_world_x,robot_world_y,robot_world_z])
             if self.obs_pose is not None:
-                obstacle_pose = robot_world_R@self.obs_pose+robot_pose # np.array([robot_world_x,robot_world_y,robot_world_z])
+                obstacle_pose = robot_world_R@self.obs_pose+robot_pos # np.array([robot_world_x,robot_world_y,robot_world_z])
             else:
-                obstacle_pose = robot_pose - np.array([-1.0,-1.0,-1.0])
-            goal_pose = robot_world_R@self.goal_pose+robot_pose # np.array([robot_world_x,robot_world_y,robot_world_z])
+                obstacle_pose = robot_pos - np.array([-1.0,-1.0,-1.0])
+            if self.approach:
+                goal_pose = robot_world_R@self.goal_pose+robot_pos # np.array([robot_world_x,robot_world_y,robot_world_z])
+            else:
+                goal_pose = robot_world_R@self.start_position+robot_pos
     
-        
+            robot_pose = robot_world_R@robot_pos
+
+            if (self.set_start_position):
+                self.start_position = robot_pose.copy()
+
         except TransformException as e:
             self.get_logger().error('Transform error: ' + str(e))
             return None,None,None
@@ -192,9 +214,15 @@ class TrackingNode(Node):
         # TODO: get the control velocity command
         cmd_vel = self.controller(current_robot_pose, current_obs_pose, current_goal_pose)
         if self.counter2 % 10 == 0:
-            self.get_logger().info(f"pose: {current_robot_pose[:2]}, goal: {current_goal_pose[:2]}, vel: {cmd_vel}")
-            if current_obs_pose is not None:
-                self.get_logger().info(f"obj: {current_obs_pose[:2]}")
+            if self.approach:
+                self.get_logger().info(f"pose: {current_robot_pose[:2]}, goal_dist: {np.linalg.norm(current_goal_pose)}, vel: {cmd_vel}")
+                if np.linalg.norm(current_goal_pose) < 0.3:
+                    self.approach = False
+                    self.get_logger().info("Goal Achieved.\n"*20)
+            else:
+                self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, vel: {cmd_vel}")
+            # if current_obs_pose is not None:
+            #     self.get_logger().info(f"obj: {current_obs_pose[:2]}")
         self.counter2 += 1
 
         # self.get_logger().info(f"vel: {cmd_vel}")
@@ -213,14 +241,17 @@ class TrackingNode(Node):
             self.get_logger().error("robot or goal is None.")
             return cmd_vel
 
-        if obj_pose is None:
-            self.get_logger().info("object is None.")
+        if self.obs_pose is None:
+            # self.get_logger().info("object is None.")
             obj_pose = np.array([-1.0, -1.0, -1.0]) # behind
 
         scale1 = 1.0
         scale2 = 1.0
 
-        robot_pose = np.zeros(2)
+        if self.approach: # The goal pose is relative to robot camera
+            robot_pose = np.zeros(2)
+        else:
+            goal_pose = self.start_position
 
         attractive_str = 0.5*scale1*((np.linalg.norm(goal_pose[:2]-robot_pose[:2]))**2)
         attractive_direction = scale1*(goal_pose[:2]-robot_pose[:2])
