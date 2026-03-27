@@ -170,19 +170,18 @@ class TrackingNode(Node):
             robot_world_z = transform.transform.translation.z
             robot_world_R = q2R([transform.transform.rotation.w, transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z])
             robot_pos = np.array([robot_world_x,robot_world_y,robot_world_z])
+            obstacle_pose = None
             if self.obs_pose is not None:
                 obstacle_pose = robot_world_R@self.obs_pose+robot_pos # np.array([robot_world_x,robot_world_y,robot_world_z])
-            else:
-                obstacle_pose = robot_pos - np.array([-1.0,-1.0,-1.0])
             if self.approach:
                 goal_pose = robot_world_R@self.goal_pose+robot_pos # np.array([robot_world_x,robot_world_y,robot_world_z])
             else:
-                goal_pose = robot_world_R@self.start_position+robot_pos
+                goal_pose = self.start_position[:2] + robot_pos[:2]
     
-            robot_pose = robot_world_R@robot_pos
+            robot_pose = robot_pos
 
             if (self.set_start_position):
-                self.start_position = robot_pose.copy()
+                self.start_position = (robot_pose).copy()
 
         except TransformException as e:
             self.get_logger().error('Transform error: ' + str(e))
@@ -215,12 +214,12 @@ class TrackingNode(Node):
         cmd_vel = self.controller(current_robot_pose, current_obs_pose, current_goal_pose)
         if self.counter2 % 10 == 0:
             if self.approach:
-                self.get_logger().info(f"pose: {current_robot_pose[:2]}, goal_dist: {np.linalg.norm(current_goal_pose)}, vel: {cmd_vel}")
+                self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, goal: {current_goal_pose[:2]}")
                 if np.linalg.norm(current_goal_pose) < 0.3:
                     self.approach = False
                     self.get_logger().info("Goal Achieved.\n"*20)
-            else:
-                self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, vel: {cmd_vel}")
+            # else:
+            self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, goal: {current_goal_pose[:2]}, vel: {cmd_vel}")
             # if current_obs_pose is not None:
             #     self.get_logger().info(f"obj: {current_obs_pose[:2]}")
         self.counter2 += 1
@@ -241,17 +240,14 @@ class TrackingNode(Node):
             self.get_logger().error("robot or goal is None.")
             return cmd_vel
 
-        if self.obs_pose is None:
-            # self.get_logger().info("object is None.")
-            obj_pose = np.array([-1.0, -1.0, -1.0]) # behind
-
         scale1 = 1.0
         scale2 = 1.0
 
         if self.approach: # The goal pose is relative to robot camera
             robot_pose = np.zeros(2)
+            pass
         else:
-            goal_pose = self.start_position
+            goal_pose = self.start_position[:2] + robot_pose[:2]
 
         attractive_str = 0.5*scale1*((np.linalg.norm(goal_pose[:2]-robot_pose[:2]))**2)
         attractive_direction = scale1*(goal_pose[:2]-robot_pose[:2])
@@ -259,16 +255,14 @@ class TrackingNode(Node):
         repulsive_direction = np.zeros(2)
         repulsive_str = 0
 
-        EPSILON = 1e-6
-        FIELD = 0.5
-        d_q = max(np.linalg.norm(obj_pose[:2] - robot_pose[:2]), EPSILON) # prevent divide by zero
-        if d_q < FIELD:
-            repulsive_str += 0.5*scale2*(((1 / d_q)-(1 / FIELD))**2)
-            g_dq = (obj_pose[:2] - robot_pose[:2]) / d_q
-            repulsive_direction += 0.5*scale2*((1 / FIELD)-(1 / d_q)) * (1 / (d_q**2)) * g_dq
-
-        # repulsive_direction = np.zeros(2)
-        # repulsive_str = 0
+        if self.obs_pose is not None:
+            EPSILON = 1e-6
+            FIELD = 0.5
+            d_q = max(np.linalg.norm(obj_pose[:2] - robot_pose[:2]), EPSILON) # prevent divide by zero
+            if d_q < FIELD:
+                repulsive_str += 0.5*scale2*(((1 / d_q)-(1 / FIELD))**2)
+                g_dq = (obj_pose[:2] - robot_pose[:2]) / d_q
+                repulsive_direction += 0.5*scale2*((1 / FIELD)-(1 / d_q)) * (1 / (d_q**2)) * g_dq
 
         total_direction = (attractive_direction+repulsive_direction) / np.linalg.norm((attractive_direction+repulsive_direction))
         total_field = attractive_str+repulsive_str
