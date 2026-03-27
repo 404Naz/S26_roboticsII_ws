@@ -31,6 +31,16 @@ def generate_launch_description():
         output="screen"
     )
 
+    start_detection_node = Node(
+        package=object_detection_pkg,
+        executable='color_start_detection',
+        name='color_start_detection_node',
+        parameters=[
+            {'color_low': [35, 100, 100]},{'color_high': [100, 255, 255]}, {'object_size_min':200}
+        ],
+        output="screen"
+    )
+
     tracking_control_node = Node(
         package=tracking_pkg,
         executable='tracking_node',
@@ -41,5 +51,6 @@ def generate_launch_description():
     return LaunchDescription([
         obj_detection_node,
         goal_detection_node,
+        start_detection_node,
         tracking_control_node
     ])

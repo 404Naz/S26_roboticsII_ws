@@ -69,6 +69,7 @@ class TrackingNode(Node):
         # Current object pose
         self.obs_pose = None
         self.goal_pose = None
+        self.start_pose = None
         
         # ROS parameters
         self.declare_parameter('world_frame_id', 'odom')
@@ -80,11 +81,12 @@ class TrackingNode(Node):
         # Create publisher for the control command
         self.pub_control_cmd = self.create_publisher(Twist, '/track_cmd_vel', 10)
         # Create a subscriber to the detected object pose
-        self.sub_detected_goal_pose = self.create_subscription(PoseStamped, 'detected_color_object_pose', self.detected_obs_pose_callback, 10)
-        self.sub_detected_obs_pose = self.create_subscription(PoseStamped, 'detected_color_goal_pose', self.detected_goal_pose_callback, 10)
+        self.sub_detected_obs_pose = self.create_subscription(PoseStamped, 'detected_color_object_pose', self.detected_obs_pose_callback, 10)
+        self.sub_detected_goal_pose = self.create_subscription(PoseStamped, 'detected_color_goal_pose', self.detected_goal_pose_callback, 10)
+        self.sub_detected_start_pose = self.create_subscription(PoseStamped, 'detected_color_start_pose', self.detected_start_pose_callback, 10)
         self.sub_start_tracking = self.create_subscription(String, '/start_tracking', self.start_tracking_callback, 10)
 
-        self.start_position = np.zeros(3)
+        self.start_position = np.zeros(2)
         self.approach = True
         self.set_start_position = True
 
@@ -120,6 +122,34 @@ class TrackingNode(Node):
         
         # Get the detected object pose in the world frame
         self.obs_pose = cp_world
+
+    def detected_start_pose_callback(self, msg):
+        #self.get_logger().info('Received Detected Object Pose')
+        
+        odom_id = self.get_parameter('world_frame_id').get_parameter_value().string_value
+        center_points = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
+
+        # self.get_logger().info("Recieved Object Pose")
+        
+        # TODO: Filtering
+        # You can decide to filter the detected object pose here
+        # For example, you can filter the pose based on the distance from the camera
+        # or the height of the object
+        # if np.linalg.norm(center_points) > 1: # or center_points[2] > 0.7:
+            # self.obs_pose = None
+            # return
+        
+        try:
+            # Transform the center point from the camera frame to the world frame
+            transform = self.tf_buffer.lookup_transform(odom_id,msg.header.frame_id,rclpy.time.Time(),rclpy.duration.Duration(seconds=0.1))
+            t_R = q2R(np.array([transform.transform.rotation.w,transform.transform.rotation.x,transform.transform.rotation.y,transform.transform.rotation.z]))
+            cp_world = t_R@center_points+np.array([transform.transform.translation.x,transform.transform.translation.y,transform.transform.translation.z])
+        except TransformException as e:
+            self.get_logger().error('Transform Error: {}'.format(e))
+            return
+        
+        # Get the detected object pose in the world frame
+        self.start_pose = cp_world
 
     def detected_goal_pose_callback(self, msg):
         #self.get_logger().info('Received Detected Object Pose')
@@ -171,14 +201,17 @@ class TrackingNode(Node):
             robot_world_R = q2R([transform.transform.rotation.w, transform.transform.rotation.x, transform.transform.rotation.y, transform.transform.rotation.z])
             robot_pos = np.array([robot_world_x,robot_world_y,robot_world_z])
             obstacle_pose = None
+            start_pose = None
             if self.obs_pose is not None:
                 obstacle_pose = robot_world_R@self.obs_pose+robot_pos # np.array([robot_world_x,robot_world_y,robot_world_z])
+            if self.start_pose is not None:
+                start_pose = robot_world_R@self.start_pose+robot_pos
             if self.approach:
                 goal_pose = robot_world_R@self.goal_pose+robot_pos # np.array([robot_world_x,robot_world_y,robot_world_z])
             else:
-                goal_pose = self.start_position[:2] + robot_pos[:2]
+                goal_pose = self.start_position[:2]
     
-            robot_pose = robot_pos
+            robot_pose = robot_world_R@robot_pos
 
             if (self.set_start_position):
                 self.start_position = (robot_pose).copy()
@@ -187,7 +220,7 @@ class TrackingNode(Node):
             self.get_logger().error('Transform error: ' + str(e))
             return None,None,None
         
-        return robot_pose, obstacle_pose, goal_pose
+        return start_pose, obstacle_pose, goal_pose
     
     def timer_update(self):
         ################### Write your code here ###################
@@ -208,18 +241,18 @@ class TrackingNode(Node):
             return
         
         # Get the current object pose in the robot base_footprint frame
-        current_robot_pose, current_obs_pose, current_goal_pose = self.get_current_poses()
+        current_start_pose, current_obs_pose, current_goal_pose = self.get_current_poses()
         
         # TODO: get the control velocity command
-        cmd_vel = self.controller(current_robot_pose, current_obs_pose, current_goal_pose)
+        cmd_vel = self.controller(current_start_pose, current_obs_pose, current_goal_pose)
         if self.counter2 % 10 == 0:
             if self.approach:
-                self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, goal: {current_goal_pose[:2]}")
+                # self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, goal: {current_goal_pose[:2]}")
                 if np.linalg.norm(current_goal_pose) < 0.3:
                     self.approach = False
                     self.get_logger().info("Goal Achieved.\n"*20)
             # else:
-            self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, goal: {current_goal_pose[:2]}, vel: {cmd_vel}")
+            # self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, goal: {current_goal_pose[:2]}, vel: {cmd_vel}")
             # if current_obs_pose is not None:
             #     self.get_logger().info(f"obj: {current_obs_pose[:2]}")
         self.counter2 += 1
@@ -230,27 +263,30 @@ class TrackingNode(Node):
         self.pub_control_cmd.publish(cmd_vel)
         #################################################
     
-    def controller(self, robot_pose, obj_pose, goal_pose):
+    def controller(self, start_pose, obj_pose, goal_pose):
         # Instructions: You can implement your own control algorithm here
         # feel free to modify the code structure, add more parameters, more input variables for the function, etc.
         
         ########### Write your code here ###########
         cmd_vel = Twist()
-        if robot_pose is None or goal_pose is None:
-            self.get_logger().error("robot or goal is None.")
+        if (start_pose is None and not self.approach) or (goal_pose is None and self.approach):
+            cmd_vel.angular.z = -0.1
+            self.get_logger().error("start or goal is None. NO TARGET")
             return cmd_vel
 
         scale1 = 1.0
         scale2 = 1.0
 
+        robot_pose = np.zeros(2)
         if self.approach: # The goal pose is relative to robot camera
-            robot_pose = np.zeros(2)
-            pass
-        else:
-            goal_pose = self.start_position[:2] + robot_pose[:2]
+            target_pose = goal_pose
 
-        attractive_str = 0.5*scale1*((np.linalg.norm(goal_pose[:2]-robot_pose[:2]))**2)
-        attractive_direction = scale1*(goal_pose[:2]-robot_pose[:2])
+        else:
+            target_pose = start_pose
+            assert(np.linalg.norm(target_pose[:2] - robot_pose[:2]) > 0.01)
+
+        attractive_str = 0.5*scale1*((np.linalg.norm(target_pose[:2]-robot_pose[:2]))**2)
+        attractive_direction = scale1*(target_pose[:2]-robot_pose[:2])
 
         repulsive_direction = np.zeros(2)
         repulsive_str = 0
@@ -267,12 +303,12 @@ class TrackingNode(Node):
         total_direction = (attractive_direction+repulsive_direction) / np.linalg.norm((attractive_direction+repulsive_direction))
         total_field = attractive_str+repulsive_str
 
-        # self.get_logger().info(f"dir: {total_direction}, mag: {total_field}")
-
         K_V = 1.0
         MAX_SPEED = 5.0
 
         strength = np.clip(total_field, -MAX_SPEED, MAX_SPEED)
+
+        # self.get_logger().info(f"pose: {robot_pose[:2]}, goal: {goal_pose[:2]} dir: {total_direction}, mag: {strength}")
 
         vel_x = K_V*strength*total_direction[0]
         vel_y = K_V*strength*total_direction[1]
