@@ -5,6 +5,8 @@ from std_msgs.msg import String
 from tf2_ros import TransformException, Buffer, TransformListener
 import numpy as np
 import math
+import time
+from collections import deque
 
 ## Functions for quaternion and rotation matrix conversion
 ## The code is adapted from the general_robotics_toolbox package
@@ -91,9 +93,12 @@ class TrackingNode(Node):
         self.set_start_position = True
 
         # Create timer, running at 100Hz
-        self.timer = self.create_timer(0.01, self.timer_update)
+        self.timer = self.create_timer(0.05, self.timer_update)
         self.counter = 0
         self.counter2 = 0
+        self.step_count = 0
+        self.steps = deque(maxlen=500)
+        self.steps.append(Twist())
     
     def detected_obs_pose_callback(self, msg):
         #self.get_logger().info('Received Detected Object Pose')
@@ -128,16 +133,14 @@ class TrackingNode(Node):
         
         odom_id = self.get_parameter('world_frame_id').get_parameter_value().string_value
         center_points = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
-
-        # self.get_logger().info("Recieved Object Pose")
         
         # TODO: Filtering
         # You can decide to filter the detected object pose here
         # For example, you can filter the pose based on the distance from the camera
         # or the height of the object
-        # if np.linalg.norm(center_points) > 1: # or center_points[2] > 0.7:
-            # self.obs_pose = None
-            # return
+        # if not (np.linalg.norm(center_points) > 0.1 and center_points[2] < 0.1):
+        #     self.start_pose = None
+        #     return
         
         try:
             # Transform the center point from the camera frame to the world frame
@@ -150,6 +153,7 @@ class TrackingNode(Node):
         
         # Get the detected object pose in the world frame
         self.start_pose = cp_world
+        # self.get_logger().info(f"Recieved Start Pose, start: {self.start_pose}, goal: {self.goal_pose}")
 
     def detected_goal_pose_callback(self, msg):
         #self.get_logger().info('Received Detected Object Pose')
@@ -184,6 +188,9 @@ class TrackingNode(Node):
         self.get_logger().info("In start callback")
         if msg.data == "Start":
             self.set_start_position = False
+            self.approach = True
+            self.steps = deque(maxlen=500)
+            self.step_count = 0
         else:
             self.set_start_position = True
             self.approach = True
@@ -207,6 +214,7 @@ class TrackingNode(Node):
             if self.start_pose is not None:
                 start_pose = robot_world_R@self.start_pose+robot_pos
             if self.approach:
+                self.start_pose = None
                 goal_pose = robot_world_R@self.goal_pose+robot_pos # np.array([robot_world_x,robot_world_y,robot_world_z])
             else:
                 goal_pose = self.start_position[:2]
@@ -223,42 +231,52 @@ class TrackingNode(Node):
         return start_pose, obstacle_pose, goal_pose
     
     def timer_update(self):
+        self.get_logger().info("Timer")
         ################### Write your code here ###################
         
         # Now, the robot stops if the object is not detected
         # But, you may want to think about what to do in this case
-        # and update the command velocity accordingly
-        if self.goal_pose is None:
-            if self.counter % 100 == 0:
-                self.get_logger().info("No Goal Pose :(")
-            self.counter += 1
-        
-        if self.goal_pose is None:
+        # and update the command velocity accordingly 
+        if (not self.approach and self.step_count >= len(self.steps)):
+            self.get_logger().info("END")
+            self.pub_control_cmd.publish(Twist())
+            return       
+        if (self.approach and self.goal_pose is None):
             cmd_vel = Twist()
             cmd_vel.linear.x = 0.0
             cmd_vel.angular.z = 1.0
             self.pub_control_cmd.publish(cmd_vel)
+            self.get_logger().info("NO GOAL")
             return
         
         # Get the current object pose in the robot base_footprint frame
         current_start_pose, current_obs_pose, current_goal_pose = self.get_current_poses()
         
-        # TODO: get the control velocity command
+        cmd_vel = Twist()
+
+        if self.approach:
+            # self.get_logger().info(f"goal: {current_goal_pose[:2]}")
+            if np.linalg.norm(current_goal_pose) <= 0.35:
+                self.approach = False
+                self.get_logger().info("Goal Achieved.\n"*20)
+                self.pub_control_cmd.publish(Twist())
+                return
+
+            # TODO: get the control velocity command
         cmd_vel = self.controller(current_start_pose, current_obs_pose, current_goal_pose)
-        if self.counter2 % 10 == 0:
-            if self.approach:
-                # self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, goal: {current_goal_pose[:2]}")
-                if np.linalg.norm(current_goal_pose) < 0.3:
-                    self.approach = False
-                    self.get_logger().info("Goal Achieved.\n"*20)
-            # else:
-            # self.get_logger().info(f"pose: {current_robot_pose[:2]}, start: {self.start_position[:2]}, goal: {current_goal_pose[:2]}, vel: {cmd_vel}")
+            # elif self.start_pose is not None:
+                # self.get_logger().info(f"start: {current_start_pose[:2]}")
             # if current_obs_pose is not None:
             #     self.get_logger().info(f"obj: {current_obs_pose[:2]}")
-        self.counter2 += 1
-
+        
+        self.get_logger().info(f"{len(self.steps)} ; {self.step_count}")
+    
         # self.get_logger().info(f"vel: {cmd_vel}")
         
+        if not (isinstance(cmd_vel, Twist)):
+            self.get_logger().info("NOT A TWIST MSG")
+            return
+
         # publish the control command
         self.pub_control_cmd.publish(cmd_vel)
         #################################################
@@ -269,9 +287,17 @@ class TrackingNode(Node):
         
         ########### Write your code here ###########
         cmd_vel = Twist()
-        if (start_pose is None and not self.approach) or (goal_pose is None and self.approach):
-            cmd_vel.angular.z = -0.1
-            self.get_logger().error("start or goal is None. NO TARGET")
+        if (goal_pose is None and self.approach):
+            self.get_logger().info("Goal is None. NO TARGET")
+            return cmd_vel
+        
+        if not self.approach and self.step_count is not None:
+            oldx, oldy = self.steps[len(self.steps)-1-round(self.step_count)]
+            cmd_vel.linear.x = -oldx
+            cmd_vel.linear.y = -oldy
+            self.step_count += 0.9
+            return cmd_vel
+        elif not self.approach and len(self.steps) <= 0:
             return cmd_vel
 
         scale1 = 1.0
@@ -283,7 +309,9 @@ class TrackingNode(Node):
 
         else:
             target_pose = start_pose
-            assert(np.linalg.norm(target_pose[:2] - robot_pose[:2]) > 0.01)
+
+        if np.linalg.norm(target_pose) < 0.3:
+            return cmd_vel
 
         attractive_str = 0.5*scale1*((np.linalg.norm(target_pose[:2]-robot_pose[:2]))**2)
         attractive_direction = scale1*(target_pose[:2]-robot_pose[:2])
@@ -320,6 +348,7 @@ class TrackingNode(Node):
         cmd_vel.angular.x = 0.0
         cmd_vel.angular.y = 0.0
         cmd_vel.angular.z = 0.0
+        self.steps.append((cmd_vel.linear.x, cmd_vel.linear.y))
         return cmd_vel
     
         ############################################
