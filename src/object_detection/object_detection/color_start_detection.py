@@ -56,12 +56,12 @@ def q2R(q):
 
 class ColorObjDetectionNode(Node):
     def __init__(self):
-        super().__init__('color_goal_detection_node')
-        self.get_logger().info('Color Goal Detection Node Started')
+        super().__init__('color_start_detection_node')
+        self.get_logger().info('Color Start Detection Node Started')
         
         # Declare the parameters for the color detection
-        self.declare_parameter('color_low', [110, 50, 150])
-        self.declare_parameter('color_high', [130, 255, 255])
+        self.declare_parameter('color_low', [35, 150, 150])
+        self.declare_parameter('color_high', [85, 255, 255])
         self.declare_parameter('object_size_min', 1000)
         # Used to convert between ROS and OpenCV images
         self.br = CvBridge()
@@ -71,8 +71,8 @@ class ColorObjDetectionNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
         
         # Create publisher for the detected object and the bounding box
-        self.pub_detected_obj = self.create_publisher(Image, '/detected_color_goal',10)
-        self.pub_detected_obj_pose = self.create_publisher(PoseStamped, '/detected_color_goal_pose', 1)
+        self.pub_detected_obj = self.create_publisher(Image, '/detected_color_start',10)
+        self.pub_detected_obj_pose = self.create_publisher(PoseStamped, '/detected_color_start_pose', 1)
         # Create a subscriber to the RGB and Depth images
         self.sub_rgb = Subscriber(self, Image, '/camera/color/image_raw')
         self.sub_depth = Subscriber(self, PointCloud2, '/camera/depth/points')
@@ -138,7 +138,7 @@ class ColorObjDetectionNode(Node):
         # publush the detected object image
         detect_img_msg = self.br.cv2_to_imgmsg(rgb_image, encoding='bgr8')
         detect_img_msg.header = rgb_msg.header
-        # self.get_logger().info('goal image message published')
+        self.get_logger().info('start image message published')
         self.pub_detected_obj.publish(detect_img_msg)
         
 def main(args=None):
