@@ -76,7 +76,7 @@ For the new camera model (astra pro plus, Robot 7~). **Unplug and plug** the cam
 ros2 launch tracking_control car_camera_proplus_bringup_launch.py
 ```
 
-## Robot Teleoeration
+## Robot Teleoperation
 At the terminal that run the teleoperation node, the terminal should show this.
 ```
 Control Your Robot!
